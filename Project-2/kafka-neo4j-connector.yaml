@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-neo4j-connector
+  labels:
+    app: kafka-neo4j-connector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-neo4j-connector
+  template:
+    metadata:
+      labels:
+        app: kafka-neo4j-connector
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: kafka-neo4j-connector
+          image: change1472/cse511-kafka-neo4j-connector:arm64
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8083
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              /etc/confluent/docker/run &
+              
+              echo "Waiting for Kafka Connect to start..."
+              while ! curl -s http://localhost:8083/ > /dev/null; do
+                sleep 5
+              done
+              
+              echo "Kafka Connect is ready. Registering Neo4j connector..."
+              sleep 10
+              
+              curl -X POST http://localhost:8083/connectors \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "name": "Neo4jSinkConnectorJSONString",
+                  "config": {
+                    "topics": "nyc_taxicab_data",
+                    "connector.class": "org.neo4j.connectors.kafka.sink.Neo4jConnector",
+                    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+                    "key.converter.schemas.enable": false,
+                    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+                    "value.converter.schemas.enable": false,
+                    "errors.retry.timeout": "-1",
+                    "errors.retry.delay.max.ms": "1000",
+                    "errors.tolerance": "all",
+                    "errors.log.enable": true,
+                    "errors.log.include.messages": true,
+                    "neo4j.uri": "bolt://neo4j-service:7687",
+                    "neo4j.authentication.type": "BASIC",
+                    "neo4j.authentication.basic.username": "neo4j",
+                    "neo4j.authentication.basic.password": "processingpipeline",
+                    "neo4j.cypher.topic.nyc_taxicab_data": "MERGE (p:Location {name: toInteger(event.PULocationID)}) MERGE (d:Location {name: toInteger(event.DOLocationID)}) MERGE (p)-[:TRIP {distance: toFloat(event.trip_distance), fare: toFloat(event.fare_amount)}]->(d)"
+                  }
+                }'
+              
+              echo "Connector registered successfully!"
+              tail -f /dev/null
+          env:
+            - name: CONNECT_BOOTSTRAP_SERVERS
+              value: "kafka-service:29092"
+            - name: CONNECT_REST_ADVERTISED_HOST_NAME
+              value: "kafka-neo4j-connector-service"
+            - name: CONNECT_REST_PORT
+              value: "8083"
+            - name: CONNECT_GROUP_ID
+              value: "neo4j-connect-group"
+            - name: CONNECT_CONFIG_STORAGE_TOPIC
+              value: "neo4j-connect-configs"
+            - name: CONNECT_OFFSET_STORAGE_TOPIC
+              value: "neo4j-connect-offsets"
+            - name: CONNECT_STATUS_STORAGE_TOPIC
+              value: "neo4j-connect-status"
+            - name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR
+              value: "1"
+            - name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR
+              value: "1"
+            - name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR
+              value: "1"
+            - name: CONNECT_KEY_CONVERTER
+              value: "org.apache.kafka.connect.storage.StringConverter"
+            - name: CONNECT_VALUE_CONVERTER
+              value: "org.apache.kafka.connect.json.JsonConverter"
+            - name: CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE
+              value: "false"
+            - name: CONNECT_PLUGIN_PATH
+              value: "/usr/share/java,/usr/share/confluent-hub-components"
+            - name: NEO4J_URI
+              value: "bolt://neo4j-service:7687"
+            - name: NEO4J_AUTH
+              value: "neo4j/processingpipeline"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-neo4j-connector-service
+spec:
+  selector:
+    app: kafka-neo4j-connector
+  ports:
+    - name: connect-rest
+      protocol: TCP
+      port: 8083
+      targetPort: 8083
+  type: ClusterIP
